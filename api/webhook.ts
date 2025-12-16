@@ -1,57 +1,65 @@
 // api/webhook.ts
 import { VercelRequest, VercelResponse } from '@vercel/node';
 import TelegramBot from 'node-telegram-bot-api';
-import { config } from '../src/utils'; // Imports the config object
-import { handleStart, handleBalance, handleBuy, handleLookup, handleCallbackQuery } from '../src/commands';
+import { 
+    handleStart, 
+    handleLookup, 
+    handleBalance, 
+    handleBuy, 
+    handleCallbackQuery, 
+    handleHelp,
+    handleAddTokens,
+    handleRemoveAllUsers,
+} from '../src/commands';
+import { config } from '../src/utils';
 
-// Initialize the bot instance using the validated token from config
-// FIX: This line will crash if the token is missing, but src/utils now throws a clearer error.
+// Initialize the bot with the correct token
 const bot = new TelegramBot(config.BOT_TOKEN, { polling: false });
 
-// Vercel Serverless Function Handler
-export default async (req: VercelRequest, res: VercelResponse) => {
-    if (req.method !== 'POST' || !req.body) {
-        // Must allow GET for Vercel health checks, but reject non-POST requests for logic
-        res.status(405).send('Method Not Allowed or Missing Body');
-        return;
+// --- Register Command Handlers ---
+bot.onText(/\/start/, (msg) => handleStart(bot, msg));
+bot.onText(/\/help/, (msg) => handleHelp(bot, msg)); // New
+bot.onText(/\/balance/, (msg) => handleBalance(bot, msg));
+bot.onText(/\/buy/, (msg) => handleBuy(bot, msg));
+
+// Lookup command
+bot.onText(/\/lookup (.+)/, (msg, match) => {
+    if (match && match[1]) {
+        handleLookup(bot, msg, match[1].trim());
     }
+});
 
+// Admin commands (New)
+bot.onText(/\/addtokens (\d+) (\d+)/, (msg, match) => {
+    if (match && match[1] && match[2]) {
+        // match[1] is the target user ID, match[2] is the tokens count
+        handleAddTokens(bot, msg, parseInt(match[1]), parseInt(match[2]));
+    }
+});
+
+bot.onText(/\/removeallusers/, (msg) => handleRemoveAllUsers(bot, msg)); // New
+
+// Handle inline keyboard button clicks
+bot.on('callback_query', (query) => handleCallbackQuery(bot, query));
+
+
+// The Vercel Serverless function handler
+export default async (req: VercelRequest, res: VercelResponse): Promise<void> => {
     try {
-        const update = req.body as TelegramBot.Update;
-        
-        // 1. Handle Messages (Commands)
-        if (update.message) {
-            const msg = update.message;
-            const text = msg.text || '';
-            const chatId = msg.chat.id;
-
-            if (text.startsWith('/start')) {
-                await handleStart(bot, msg);
-            } else if (text.startsWith('/balance')) {
-                await handleBalance(bot, msg);
-            } else if (text.startsWith('/buy')) {
-                await handleBuy(bot, msg);
-            } else if (text.startsWith('/lookup')) {
-                const parts = text.split(/\s+/);
-                if (parts.length === 2 && !isNaN(Number(parts[1]))) { // Simple number validation
-                    await handleLookup(bot, msg, parts[1]);
-                } else {
-                    await bot.sendMessage(chatId, "❌ Invalid lookup format. Use: `/lookup <number>`", { parse_mode: 'Markdown' });
-                }
-            }
+        if (req.method === 'POST') {
+            // Process the Telegram update
+            await bot.processUpdate(req.body as TelegramBot.Update);
+            // Must respond with 200 OK immediately
+            res.status(200).send('OK');
+        } else if (req.method === 'GET') {
+            // Optional: for checking if the endpoint is alive
+            res.status(200).send('Telegram Bot Webhook is running.');
+        } else {
+            res.status(405).send('Method Not Allowed');
         }
-        
-        // 2. Handle Callback Queries
-        if (update.callback_query) {
-            await handleCallbackQuery(bot, update.callback_query);
-        }
-
-        // Acknowledge Telegram update quickly
-        res.status(200).send('OK');
-
     } catch (error) {
-        console.error('Webhook processing error:', error);
-        // Send a 500 error to signal a problem without detailed exposure
-        res.status(500).send('Internal Server Error');
+        console.error('Webhook error:', error);
+        // Respond with 500 but still send 200 to Telegram to stop retries if possible
+        res.status(200).send('Error');
     }
 };

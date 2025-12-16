@@ -7,7 +7,11 @@
     "strict": true,
     "skipLibCheck": true,
     "outDir": "./dist",
-    "rootDir": "./"
+    "rootDir": "./",
+    "typeRoots": [ // <-- Changed from "types"
+      "./node_modules/@types",
+      "./types"
+    ]
   },
   "include": ["api/**/*.ts", "src/**/*.ts"]
 }
