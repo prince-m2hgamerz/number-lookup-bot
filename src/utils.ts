@@ -1,9 +1,10 @@
 // src/utils.ts
 import * as qrcode from 'qrcode';
 
-// FIX: Use require() to reliably import the CommonJS module constructor
-// This bypasses the 'default is not a constructor' error.
-const Store = require('json-file-store');
+// FIX: Reliably extract the Store constructor, accounting for common module wrapping.
+const StoreModule = require('json-file-store');
+// Try to use the default export if it exists (for compatibility), otherwise use the root export.
+const Store = StoreModule.default || StoreModule; 
 
 import { BotConfig } from './types';
 
