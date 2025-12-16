@@ -1,11 +1,10 @@
-// src/utils.ts (SQLite Implementation)
+// src/utils.ts (PostgreSQL/Neon Implementation)
 import * as qrcode from 'qrcode';
 import { BotConfig } from './types';
-import Database from 'better-sqlite3';
+import { Client } from 'pg'; // PostgreSQL client
 
 // --- Configuration Constants ---
 const BOT_TOKEN_VALUE = process.env.BOT_TOKEN;
-const DB_PATH = './db/tokens.sqlite';
 
 if (!BOT_TOKEN_VALUE || BOT_TOKEN_VALUE.trim() === '') {
     throw new Error("CRITICAL STARTUP ERROR: BOT_TOKEN environment variable is missing or empty.");
@@ -20,70 +19,70 @@ export const config: BotConfig = {
     TOKEN_PRICE: 0.50,
 };
 
-// --- SQLite Database Initialization ---
-let db: Database.Database | null = null;
+// --- PostgreSQL Database Initialization ---
 
-function initializeDatabase(): Database.Database {
-    if (db) {
-        return db;
+// Initialize a single database client instance (Best practice for Serverless)
+const client = new Client({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false }, // Necessary for some cloud connections like Neon
+});
+
+// Function to ensure the database connection is established and table exists
+async function ensureDbConnected(): Promise<void> {
+    if (client.host === undefined) {
+        console.error("CRITICAL: DATABASE_URL is not set.");
+        throw new Error("Database configuration error.");
     }
     
-    try {
-        // We set the database object to be read/write and potentially create it if missing
-        db = new Database(DB_PATH, { verbose: console.log });
-        
-        // Create the tokens table if it does not exist
-        db.prepare(`
-            CREATE TABLE IF NOT EXISTS user_tokens (
-                user_id INTEGER PRIMARY KEY,
-                tokens INTEGER NOT NULL DEFAULT 0
-            )
-        `).run();
-
-        console.log('SQLite database initialized successfully.');
-        return db;
-    } catch (error) {
-        console.error('CRITICAL: Failed to initialize SQLite database:', error);
-        throw new Error('Database initialization failed.');
+    // Connect client (only connects if not already connected)
+    if (!client.host) { // A crude check to see if we need to connect
+        await client.connect();
+        console.log('PostgreSQL database connected.');
     }
+
+    // Ensure table exists (Idempotent operation)
+    await client.query(`
+        CREATE TABLE IF NOT EXISTS user_tokens (
+            user_id BIGINT PRIMARY KEY,
+            tokens INTEGER NOT NULL DEFAULT 0
+        );
+    `);
 }
 
-// Initialize the database connection when the module loads
-const database = initializeDatabase();
-
-// --- Token Management Functions (SQLite) ---
+// --- Token Management Functions (PostgreSQL) ---
 
 export async function getUserTokens(userId: number): Promise<number> {
-    const stmt = database.prepare('SELECT tokens FROM user_tokens WHERE user_id = ?');
-    const row: { tokens: number } | undefined = stmt.get(userId) as any;
-    return row ? row.tokens : 0;
+    await ensureDbConnected();
+    const result = await client.query('SELECT tokens FROM user_tokens WHERE user_id = $1', [userId]);
+    
+    // Return tokens if row exists, otherwise 0
+    return result.rows.length > 0 ? result.rows[0].tokens : 0;
 }
 
 export async function setUserTokens(userId: number, tokens: number): Promise<void> {
-    const stmt = database.prepare(`
-        INSERT INTO user_tokens (user_id, tokens) VALUES (?, ?)
-        ON CONFLICT(user_id) DO UPDATE SET tokens=excluded.tokens
-    `);
-    stmt.run(userId, tokens);
+    await ensureDbConnected();
+    // INSERT or UPDATE (UPSERT)
+    const query = `
+        INSERT INTO user_tokens (user_id, tokens) 
+        VALUES ($1, $2)
+        ON CONFLICT (user_id) DO UPDATE 
+        SET tokens = $2;
+    `;
+    await client.query(query, [userId, tokens]);
 }
 
 export async function removeAllUsers(): Promise<void> {
+    await ensureDbConnected();
     // WARNING: This clears ALL user token data.
-    database.prepare('DELETE FROM user_tokens').run();
+    await client.query('DELETE FROM user_tokens');
 }
 
 // --- Utility Functions (Rest remains the same) ---
 
-/**
- * Normalizes a phone number string for API lookup
- */
 export function normalizeNumber(numberString: string): string {
     return numberString.replace(/[\s\-\(\)\+]/g, '');
 }
 
-/**
- * Generates the UPI QR code base64 string.
- */
 export async function generateUpiQr(amount: number, tokens: number, userId: number): Promise<string> {
     const transactionNote = `TGBOT-${userId}-BUY-${tokens}`;
     const upiUrl = `upi://pay?pa=${config.UPI_ID}&pn=NumberLookupBot&am=${amount.toFixed(2)}&cu=INR&tn=${encodeURIComponent(transactionNote)}`;
