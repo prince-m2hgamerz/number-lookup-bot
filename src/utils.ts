@@ -1,11 +1,11 @@
-// src/utils.ts
+// src/utils.ts (Vercel KV Version)
 import * as qrcode from 'qrcode';
 import { BotConfig } from './types';
+import { createClient } from '@vercel/kv';
 
 // --- Configuration Constants ---
 const BOT_TOKEN_VALUE = process.env.BOT_TOKEN;
 
-// Defensive check
 if (!BOT_TOKEN_VALUE || BOT_TOKEN_VALUE.trim() === '') {
     throw new Error("CRITICAL STARTUP ERROR: BOT_TOKEN environment variable is missing or empty.");
 }
@@ -16,60 +16,43 @@ export const config: BotConfig = {
     UPI_ID: process.env.UPI_ID || 'paytm.s1pvwh6@pty',
     API_KEY: process.env.API_KEY || 'subharansu-200',
     API_BASE_URL: 'https://numberinfo.m2hgamerz.workers.dev/',
-    TOKEN_PRICE: 0.50, // Price per token in INR
+    TOKEN_PRICE: 0.50,
 };
 
-// --- Store Management (Bypassing Static Import Error) ---
-let userStoreInstance: any = null; // Use any type for the dynamic store
+// --- KV Store Initialization ---
+// Vercel KV client is automatically configured using VERCEL_KV_* environment variables
+const kv = createClient({
+    url: process.env.KV_REST_API_URL,
+    token: process.env.KV_REST_API_TOKEN,
+});
 
-/**
- * Dynamically loads the Store constructor to bypass the "is not a constructor" error.
- * @returns The initialized Store instance.
- */
-async function getStoreInstance(): Promise<any> {
-    if (userStoreInstance) {
-        return userStoreInstance;
-    }
-    
-    // FIX: Dynamic import to avoid Vercel transpilation issues
-    // We use a general import and rely on the CommonJS behavior.
-    const StoreModule = await import('json-file-store');
-    
-    // Check for both .default and the root object for the constructor
-    const Store = (StoreModule as any).default || StoreModule;
+const KV_NAMESPACE = 'tokens';
 
-    // Line where the constructor error previously occurred, now safer due to dynamic import
-    userStoreInstance = new Store({ file: './db/tokens.json', fallback: {} }); 
-    return userStoreInstance;
-}
-
-interface StoredUser {
-    id: number;
-    tokens: number;
-}
-
-// --- Token Management Functions (Now await getStoreInstance() before use) ---
+// --- Token Management Functions (Vercel KV) ---
 
 export async function getUserTokens(userId: number): Promise<number> {
-    const store = await getStoreInstance();
-    const user: StoredUser | null = await store.load(userId);
-    return user ? user.tokens : 0;
+    const key = `${KV_NAMESPACE}:${userId}`;
+    const tokens = await kv.get<number>(key);
+    return tokens || 0; // Returns 0 if key is not found
 }
 
 export async function setUserTokens(userId: number, tokens: number): Promise<void> {
-    const store = await getStoreInstance();
-    await store.save({ id: userId, tokens: tokens });
+    const key = `${KV_NAMESPACE}:${userId}`;
+    await kv.set(key, tokens);
 }
 
 export async function removeAllUsers(): Promise<void> {
-    const store = await getStoreInstance();
-    await store.purge();
+    // WARNING: This clears all keys with the "tokens:" prefix.
+    const keys = await kv.keys(`${KV_NAMESPACE}:*`);
+    if (keys.length > 0) {
+        await Promise.all(keys.map(key => kv.del(key)));
+    }
 }
 
 // --- Utility Functions (Rest remains the same) ---
 
 /**
- * Normalizes a phone number string for API lookup (e.g., removes +, spaces, dashes)
+ * Normalizes a phone number string for API lookup
  */
 export function normalizeNumber(numberString: string): string {
     return numberString.replace(/[\s\-\(\)\+]/g, '');
@@ -84,7 +67,6 @@ export async function generateUpiQr(amount: number, tokens: number, userId: numb
     
     try {
         const qrBase64 = await qrcode.toDataURL(upiUrl, { type: 'image/png' });
-        // Return only the base64 part
         return qrBase64.replace(/^data:image\/png;base64,/, '');
     } catch (err) {
         console.error("QR Code generation error:", err);

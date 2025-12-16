@@ -9,8 +9,8 @@
     "build": "tsc"
   },
   "dependencies": {
+    "@vercel/kv": "^3.0.0",
     "axios": "^1.6.5",
-    "json-file-store": "^1.0.5",
     "node-telegram-bot-api": "^0.67.0",
     "qrcode": "^1.5.3"
   },
