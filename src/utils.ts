@@ -1,11 +1,5 @@
 // src/utils.ts
 import * as qrcode from 'qrcode';
-
-// DEFINITIVE FIX: Use a temporary variable to hold the module and then reliably
-// extract the constructor, handling Vercel's transpilation quirks.
-const StoreModule = require('json-file-store');
-const Store = (StoreModule && StoreModule.default) ? StoreModule.default : StoreModule;
-
 import { BotConfig } from './types';
 
 // --- Configuration Constants ---
@@ -25,41 +19,72 @@ export const config: BotConfig = {
     TOKEN_PRICE: 0.50, // Price per token in INR
 };
 
-// --- Token Management (Persistent DB) ---
-// Line 64 where the error occurs:
-const userStore = new Store({ file: './db/tokens.json', fallback: {} }); 
+// --- Store Management (Bypassing Static Import Error) ---
+let userStoreInstance: any = null; // Use any type for the dynamic store
+
+/**
+ * Dynamically loads the Store constructor to bypass the "is not a constructor" error.
+ * @returns The initialized Store instance.
+ */
+async function getStoreInstance(): Promise<any> {
+    if (userStoreInstance) {
+        return userStoreInstance;
+    }
+    
+    // FIX: Dynamic import to avoid Vercel transpilation issues
+    // We use a general import and rely on the CommonJS behavior.
+    const StoreModule = await import('json-file-store');
+    
+    // Check for both .default and the root object for the constructor
+    const Store = (StoreModule as any).default || StoreModule;
+
+    // Line where the constructor error previously occurred, now safer due to dynamic import
+    userStoreInstance = new Store({ file: './db/tokens.json', fallback: {} }); 
+    return userStoreInstance;
+}
 
 interface StoredUser {
     id: number;
     tokens: number;
 }
 
-// ... (rest of the functions remain the same) ...
+// --- Token Management Functions (Now await getStoreInstance() before use) ---
 
 export async function getUserTokens(userId: number): Promise<number> {
-    const user: StoredUser | null = await userStore.load(userId);
+    const store = await getStoreInstance();
+    const user: StoredUser | null = await store.load(userId);
     return user ? user.tokens : 0;
 }
 
 export async function setUserTokens(userId: number, tokens: number): Promise<void> {
-    await userStore.save({ id: userId, tokens: tokens });
+    const store = await getStoreInstance();
+    await store.save({ id: userId, tokens: tokens });
 }
 
 export async function removeAllUsers(): Promise<void> {
-    await userStore.purge();
+    const store = await getStoreInstance();
+    await store.purge();
 }
 
-// ... (utility functions) ...
+// --- Utility Functions (Rest remains the same) ---
+
+/**
+ * Normalizes a phone number string for API lookup (e.g., removes +, spaces, dashes)
+ */
 export function normalizeNumber(numberString: string): string {
     return numberString.replace(/[\s\-\(\)\+]/g, '');
 }
 
+/**
+ * Generates the UPI QR code base64 string.
+ */
 export async function generateUpiQr(amount: number, tokens: number, userId: number): Promise<string> {
     const transactionNote = `TGBOT-${userId}-BUY-${tokens}`;
     const upiUrl = `upi://pay?pa=${config.UPI_ID}&pn=NumberLookupBot&am=${amount.toFixed(2)}&cu=INR&tn=${encodeURIComponent(transactionNote)}`;
     
     try {
         const qrBase64 = await qrcode.toDataURL(upiUrl, { type: 'image/png' });
+        // Return only the base64 part
         return qrBase64.replace(/^data:image\/png;base64,/, '');
     } catch (err) {
         console.error("QR Code generation error:", err);
