@@ -1,65 +1,50 @@
 // api/webhook.ts
+
 import { VercelRequest, VercelResponse } from '@vercel/node';
 import TelegramBot from 'node-telegram-bot-api';
-import { 
-    handleStart, 
-    handleLookup, 
-    handleBalance, 
-    handleBuy, 
-    handleCallbackQuery, 
-    handleHelp,
-    handleAddTokens,
-    handleRemoveAllUsers,
-} from '../src/commands';
 import { config } from '../src/utils';
+import { registerCommandHandlers } from '../src/commands';
 
-// Initialize the bot with the correct token
-const bot = new TelegramBot(config.BOT_TOKEN, { polling: false });
+// --- Global Bot Instance & Handler Registration ---
+// We create the bot instance outside the handler for reuse.
+const bot = new TelegramBot(config.BOT_TOKEN);
 
-// --- Register Command Handlers ---
-bot.onText(/\/start/, (msg) => handleStart(bot, msg));
-bot.onText(/\/help/, (msg) => handleHelp(bot, msg)); // New
-bot.onText(/\/balance/, (msg) => handleBalance(bot, msg));
-bot.onText(/\/buy/, (msg) => handleBuy(bot, msg));
+// Flag to ensure handlers are only registered once on serverless cold start
+let handlersRegistered = false;
 
-// Lookup command
-bot.onText(/\/lookup (.+)/, (msg, match) => {
-    if (match && match[1]) {
-        handleLookup(bot, msg, match[1].trim());
+if (!handlersRegistered) {
+    registerCommandHandlers(bot);
+    handlersRegistered = true;
+    console.log('Telegram command handlers registered.');
+}
+// --- End Global Setup ---
+
+
+export default async (request: VercelRequest, response: VercelResponse) => {
+    // Only accept POST requests from Telegram
+    if (request.method !== 'POST') {
+        return response.status(405).send('Method Not Allowed');
     }
-});
 
-// Admin commands (New)
-bot.onText(/\/addtokens (\d+) (\d+)/, (msg, match) => {
-    if (match && match[1] && match[2]) {
-        // match[1] is the target user ID, match[2] is the tokens count
-        handleAddTokens(bot, msg, parseInt(match[1]), parseInt(match[2]));
-    }
-});
-
-bot.onText(/\/removeallusers/, (msg) => handleRemoveAllUsers(bot, msg)); // New
-
-// Handle inline keyboard button clicks
-bot.on('callback_query', (query) => handleCallbackQuery(bot, query));
-
-
-// The Vercel Serverless function handler
-export default async (req: VercelRequest, res: VercelResponse): Promise<void> => {
     try {
-        if (req.method === 'POST') {
-            // Process the Telegram update
-            await bot.processUpdate(req.body as TelegramBot.Update);
-            // Must respond with 200 OK immediately
-            res.status(200).send('OK');
-        } else if (req.method === 'GET') {
-            // Optional: for checking if the endpoint is alive
-            res.status(200).send('Telegram Bot Webhook is running.');
+        const update = request.body;
+        
+        if (update) {
+            // Process the update with the registered bot instance
+            // This triggers the listeners defined in src/commands.ts
+            await bot.processUpdate(update); 
+
+            // CRITICAL: Respond immediately with 200 OK. 
+            // The Telegram reply is sent via a separate request initiated by bot.processUpdate.
+            return response.status(200).send('OK');
         } else {
-            res.status(405).send('Method Not Allowed');
+            // No update payload, respond 200 OK
+            return response.status(200).send('No Update Payload');
         }
+
     } catch (error) {
-        console.error('Webhook error:', error);
-        // Respond with 500 but still send 200 to Telegram to stop retries if possible
-        res.status(200).send('Error');
+        // Log the error and still return 200 OK to prevent Telegram from retrying indefinitely
+        console.error('Unhandled error processing update:', error);
+        return response.status(200).send('Internal Error (Logged)');
     }
 };

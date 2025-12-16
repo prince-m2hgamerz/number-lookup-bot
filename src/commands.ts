@@ -1,270 +1,216 @@
 // src/commands.ts
-import TelegramBot, { Message, CallbackQuery } from 'node-telegram-bot-api';
-import axios from 'axios';
-import { config, getUserTokens, setUserTokens, generateUpiQr, normalizeNumber, removeAllUsers } from './utils';
 
-// --- Command Handlers ---
+import TelegramBot from 'node-telegram-bot-api';
+import { 
+    config, 
+    getUserTokens, 
+    setUserTokens, 
+    normalizeNumber, 
+    generateUpiQr,
+    removeAllUsers 
+} from './utils';
 
-export async function handleStart(bot: TelegramBot, msg: Message): Promise<void> {
-    const chatId = msg.chat.id;
-    const tokens = await getUserTokens(chatId);
+const ADMIN_ID = config.ADMIN_CHAT_ID;
 
-    const message = `
-📞 **Welcome to the Number Lookup Bot!**
+/**
+ * Registers all command listeners with the provided bot instance.
+ * @param bot The active TelegramBot instance.
+ */
+export function registerCommandHandlers(bot: TelegramBot) {
 
-This bot uses the *numberinfo* service to look up mobile number details.
-
-💰 **Token System:**
-• 1 Lookup = 1 Token
-• Your current balance: **${tokens} Tokens**
-
-➡️ **Available Commands:**
-• /lookup <number>: Perform a lookup (e.g., \`/lookup 9818368263\`)
-• /balance: Check your current token balance.
-• /buy: See pricing and buy more tokens.
-• /help: View this guide and all commands.
-
-*To perform a lookup, ensure you have sufficient tokens.*
-    `;
-    bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
-}
-
-export async function handleHelp(bot: TelegramBot, msg: Message): Promise<void> {
-    const chatId = msg.chat.id;
-    const isAdmin = chatId.toString() === config.ADMIN_CHAT_ID;
-
-    let helpText = `
-📖 **Bot Commands Reference**
-
-**User Commands:**
-• /start: Show the welcome message and token balance.
-• /lookup \`<number>\`: Performs a number lookup (e.g., \`/lookup 9818368263\`). *Costs 1 Token.*
-• /balance: Check your current token balance.
-• /buy: View token pricing and payment options.
-
-`;
-    
-    if (isAdmin) {
-        helpText += `
-**⚙️ Admin Commands (For ${config.ADMIN_CHAT_ID}):**
-• /addtokens \`<UserID>\` \`<Tokens>\`: Credit tokens to a user (e.g., \`/addtokens 12345678 10\`).
-• /removeallusers: **DANGER!** Completely clear the entire token database.
-`;
-    }
-
-    bot.sendMessage(chatId, helpText, { parse_mode: 'Markdown' });
-}
-
-export async function handleBalance(bot: TelegramBot, msg: Message): Promise<void> {
-    const chatId = msg.chat.id;
-    const tokens = await getUserTokens(chatId);
-
-    bot.sendMessage(chatId, `Your current token balance is: **${tokens} Tokens**.\n\nType \`/buy\` to add more tokens.`, { parse_mode: 'Markdown' });
-}
-
-export async function handleBuy(bot: TelegramBot, msg: Message): Promise<void> {
-    const chatId = msg.chat.id;
-    const price = config.TOKEN_PRICE.toFixed(2);
-    
-    const message = `
-💳 **Buy Tokens**
-
-The price for 1 token is **₹${price}** (INR).
-
-Select a token package below to generate a UPI payment link and QR code. You will need to share the payment screenshot with the admin (${config.ADMIN_CHAT_ID}) after payment to receive your tokens.
-    `;
-
-    const keyboard = {
-        inline_keyboard: [
-            [{ text: '5 Tokens (₹' + (5 * config.TOKEN_PRICE).toFixed(2) + ')', callback_data: 'buy_5' }],
-            [{ text: '10 Tokens (₹' + (10 * config.TOKEN_PRICE).toFixed(2) + ')', callback_data: 'buy_10' }],
-            [{ text: '20 Tokens (₹' + (20 * config.TOKEN_PRICE).toFixed(2) + ')', callback_data: 'buy_20' }],
-        ]
-    };
-
-    bot.sendMessage(chatId, message, {
-        parse_mode: 'Markdown',
-        reply_markup: keyboard,
-    });
-}
-
-// New: Handle adding tokens (Admin Only)
-export async function handleAddTokens(bot: TelegramBot, msg: Message, targetUserId: number, tokensToAdd: number): Promise<void> {
-    const chatId = msg.chat.id;
-
-    // 1. Permission Check
-    if (chatId.toString() !== config.ADMIN_CHAT_ID) {
-        bot.sendMessage(chatId, '❌ **Permission Denied.** This command is only for the bot administrator.', { parse_mode: 'Markdown' });
-        return;
-    }
-
-    // 2. Logic Check
-    if (tokensToAdd <= 0 || isNaN(targetUserId)) {
-        bot.sendMessage(chatId, '❌ Usage: \`/addtokens <UserID> <Tokens>\` (Tokens must be > 0 and UserID must be a number).', { parse_mode: 'Markdown' });
-        return;
-    }
-
-    try {
-        // 3. Update Tokens
-        const currentTokens = await getUserTokens(targetUserId);
-        const newTokens = currentTokens + tokensToAdd;
-        await setUserTokens(targetUserId, newTokens);
-
-        // 4. Send Confirmation to Admin
-        bot.sendMessage(chatId, 
-            `✅ **Tokens Added Successfully!**\n\n` +
-            `User ID: \`${targetUserId}\`\n` +
-            `Tokens Added: **${tokensToAdd}**\n` +
-            `New Balance: **${newTokens}**`, 
-            { parse_mode: 'Markdown' }
-        );
+    // --- Start Command ---
+    bot.onText(/\/start/, async (msg) => {
+        const chatId = msg.chat.id;
+        const tokens = await getUserTokens(chatId);
         
-        // 5. Notify the User (best effort)
-        bot.sendMessage(targetUserId, 
-            `🎉 **Congratulations!**\n\n` +
-            `Your account has been credited with **${tokensToAdd} Tokens** by the administrator.\n` +
-            `Your new balance is: **${newTokens} Tokens**.\n\n` +
-            `You can now use the \`/lookup <number>\` command.`,
-            { parse_mode: 'Markdown' }
-        ).catch(error => {
-            // Log a warning if the user cannot be notified
-            bot.sendMessage(chatId, `⚠️ **Warning:** Could not send a notification to user ID \`${targetUserId}\`. They may have blocked the bot.`, { parse_mode: 'Markdown' });
-            console.warn(`Could not send notification to user ${targetUserId}:`, error.message);
-        });
-
-    } catch (error) {
-        console.error('Error in handleAddTokens:', error);
-        bot.sendMessage(chatId, '❌ An error occurred while trying to update tokens.', { parse_mode: 'Markdown' });
-    }
-}
-
-// New: Handle removing all users (Admin Only)
-export async function handleRemoveAllUsers(bot: TelegramBot, msg: Message): Promise<void> {
-    const chatId = msg.chat.id;
-
-    // 1. Permission Check
-    if (chatId.toString() !== config.ADMIN_CHAT_ID) {
-        bot.sendMessage(chatId, '❌ **Permission Denied.** This command is only for the bot administrator.', { parse_mode: 'Markdown' });
-        return;
-    }
-
-    try {
-        await removeAllUsers();
-        bot.sendMessage(chatId, '🔥 **DANGER: All user token data has been completely wiped from the database.**', { parse_mode: 'Markdown' });
-    } catch (error) {
-        console.error('Error in handleRemoveAllUsers:', error);
-        bot.sendMessage(chatId, '❌ An error occurred while trying to clear the database.', { parse_mode: 'Markdown' });
-    }
-}
-
-export async function handleLookup(bot: TelegramBot, msg: Message, numberString: string): Promise<void> {
-    const chatId = msg.chat.id;
-    const userId = msg.from?.id;
-
-    if (!userId) {
-        bot.sendMessage(chatId, '❌ Could not retrieve your user ID. Please try the /start command.');
-        return;
-    }
-    
-    // 1. Token Check
-    const currentTokens = await getUserTokens(userId);
-    if (currentTokens < 1) {
-        bot.sendMessage(chatId, '🛑 **Insufficient Tokens!**\n\n1 lookup costs 1 token. Your current balance is 0.\n\nType \`/buy\` to add more tokens.', { parse_mode: 'Markdown' });
-        return;
-    }
-
-    // 2. Normalize Number
-    const lookupNumber = normalizeNumber(numberString);
-
-    if (lookupNumber.length < 5 || lookupNumber.length > 15) {
-        bot.sendMessage(chatId, '❌ Invalid number format. Please ensure the number is clean and reasonable length (e.g., `9818368263`).', { parse_mode: 'Markdown' });
-        return;
-    }
-
-    try {
-        // 3. Perform API Lookup
-        const response = await axios.get(config.API_BASE_URL, {
-            params: {
-                key: config.API_KEY,
-                number: lookupNumber
-            },
-            timeout: 10000 // 10 second timeout
-        });
-
-        // 4. Check for API success
-        const apiData = response.data;
-        
-        let resultMessage: string;
-
-        if (apiData.status === 'success' && apiData.data) {
-            const data = apiData.data;
-            resultMessage = `
-✅ **Lookup Successful!** (1 Token Used)
-
-📞 **Number:** \`${lookupNumber}\`
-👤 **Name:** **${data.name || 'N/A'}**
-📍 **Address:** ${data.address || 'N/A'}
-🌐 **Operator/Provider:** ${data.operator || 'N/A'}
-🌍 **State/Circle:** ${data.state || 'N/A'}
-`;
-            
-            // 5. Deduct Token on Success
-            await setUserTokens(userId, currentTokens - 1);
-
-        } else if (apiData.status === 'error') {
-            resultMessage = `❌ **Lookup Failed!**\n\nAPI Error: *${apiData.message || 'The API returned an unknown error.'}*\n\nYour token was **NOT** used.`;
-        } else {
-            resultMessage = `⚠️ **Lookup Status Unknown**\n\nCould not parse response from the API. Please try again later. Your token was **NOT** used.`;
-        }
-
-        bot.sendMessage(chatId, resultMessage, { parse_mode: 'Markdown' });
-
-    } catch (error) {
-        console.error("API Lookup Error:", error);
-        bot.sendMessage(chatId, '❌ **Internal Error:** Could not connect to the lookup service. Please try again in a few moments. Your token was **NOT** used.', { parse_mode: 'Markdown' });
-    }
-}
-
-export async function handleCallbackQuery(bot: TelegramBot, query: CallbackQuery): Promise<void> {
-    const chatId = query.message?.chat.id;
-    const userId = query.from.id;
-    const data = query.data;
-
-    if (!chatId || !data) return;
-
-    await bot.answerCallbackQuery(query.id); // Acknowledge the button press
-
-    if (data.startsWith('buy_')) {
-        const tokens = parseInt(data.replace('buy_', ''));
-        if (isNaN(tokens)) return;
-
-        const amount = tokens * config.TOKEN_PRICE;
+        const welcomeMessage = 
+            `Welcome to Number Lookup Bot!\n\n` +
+            `You currently have **${tokens}** tokens.\n\n` +
+            `Use /lookup <number> to check information.\n` +
+            `Use /balance to check your tokens.\n` +
+            `Use /buytokens to top up.`;
 
         try {
-            const qrBase64 = await generateUpiQr(amount, tokens, userId);
-
-            const caption = `
-💰 **Payment Details for ${tokens} Tokens**
-
-1. **Amount:** **₹${amount.toFixed(2)}** INR
-2. **UPI ID:** \`${config.UPI_ID}\`
-3. **Reference Note (important!):** \`TGBOT-${userId}-BUY-${tokens}\`
-
-**ACTION REQUIRED:**
-1. Scan the QR code or click the UPI link to pay **₹${amount.toFixed(2)}**.
-2. **IMPORTANT:** After payment, forward the transaction screenshot (or send a message with the UTR/Reference ID) to the Admin: **${config.ADMIN_CHAT_ID}**
-3. Your tokens will be manually credited shortly after verification.
-            `;
-
-            // Send the QR code image
-            await bot.sendPhoto(chatId, Buffer.from(qrBase64, 'base64'), {
-                caption: caption,
-                parse_mode: 'Markdown',
-            });
-            
+            await bot.sendMessage(chatId, welcomeMessage, { parse_mode: 'Markdown' });
         } catch (error) {
-            console.error('Error in handleCallbackQuery:', error);
-            bot.sendMessage(chatId, '❌ Failed to generate payment details. Please try again later.', { parse_mode: 'Markdown' });
+            console.error("Error sending start message:", error);
         }
-    }
+    });
+
+    // --- Balance Command ---
+    bot.onText(/\/balance/, async (msg) => {
+        const chatId = msg.chat.id;
+        const tokens = await getUserTokens(chatId);
+
+        try {
+            await bot.sendMessage(chatId, `Your current token balance is **${tokens}** tokens.`, { parse_mode: 'Markdown' });
+        } catch (error) {
+            console.error("Error sending balance message:", error);
+        }
+    });
+
+    // --- Buy Tokens Command ---
+    bot.onText(/\/buytokens/, async (msg) => {
+        const chatId = msg.chat.id;
+        const userId = msg.from?.id;
+
+        if (!userId) return;
+
+        const markup = {
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: '10 Tokens (₹5.00)', callback_data: 'buy_10' }],
+                    [{ text: '20 Tokens (₹10.00)', callback_data: 'buy_20' }]
+                ]
+            }
+        };
+
+        try {
+            await bot.sendMessage(chatId, 'Select the token package you wish to purchase:', markup);
+        } catch (error) {
+            console.error("Error sending buytokens message:", error);
+        }
+    });
+
+    // --- Callback Query Handler (for Buy Tokens) ---
+    bot.on('callback_query', async (query) => {
+        const chatId = query.message?.chat.id;
+        const userId = query.from.id;
+        const data = query.data;
+
+        if (!chatId || !data) return;
+
+        const match = data.match(/^buy_(\d+)$/);
+        if (match) {
+            const tokensToBuy = parseInt(match[1]);
+            const amount = tokensToBuy * config.TOKEN_PRICE;
+
+            const qrBase64 = await generateUpiQr(amount, tokensToBuy, userId);
+
+            try {
+                // Send the payment information
+                await bot.sendPhoto(chatId, Buffer.from(qrBase64, 'base64'), {
+                    caption: 
+                        `Send **₹${amount.toFixed(2)}** to the UPI ID: \`${config.UPI_ID}\`\n\n` +
+                        `**Tokens:** ${tokensToBuy}\n` +
+                        `**User ID:** ${userId}\n\n` +
+                        `*After payment, contact the admin to receive your tokens.*`,
+                    parse_mode: 'Markdown'
+                });
+
+                // Dismiss the loading state on the button
+                await bot.answerCallbackQuery(query.id, { text: 'Payment details sent!' });
+
+            } catch (error) {
+                console.error("Error sending payment info:", error);
+                await bot.answerCallbackQuery(query.id, { text: 'Failed to generate payment details.' });
+            }
+        }
+    });
+
+    // --- Lookup Command ---
+    bot.onText(/\/lookup (.+)/, async (msg, match) => {
+        const chatId = msg.chat.id;
+        const userId = msg.from?.id;
+        const rawNumber = match![1];
+        
+        if (!userId) return;
+
+        let tokens = await getUserTokens(userId);
+
+        if (tokens < 1) {
+            try {
+                await bot.sendMessage(chatId, "You need at least 1 token for a lookup. Please use /buytokens to top up.");
+            } catch (error) {
+                console.error("Error sending low tokens message:", error);
+            }
+            return;
+        }
+
+        const number = normalizeNumber(rawNumber);
+        
+        try {
+            // 1. Fetch data from the API
+            const response = await fetch(`${config.API_BASE_URL}?key=${config.API_KEY}&number=${number}`);
+            const data = await response.json();
+
+            // Check API response for success and send result
+            let replyText = 'Lookup failed or data not available.';
+            if (data.status === 'success' && data.data) {
+                replyText = 
+                    `✅ **Lookup Successful**\n` +
+                    `---\n` +
+                    `**Number:** ${data.data.number}\n` +
+                    `**Carrier:** ${data.data.carrier}\n` +
+                    `**Circle:** ${data.data.circle}\n` +
+                    `**Service:** ${data.data.service}\n` +
+                    `**Ported:** ${data.data.ported ? 'Yes' : 'No'}`;
+                
+                // 2. Decrement token count ONLY on success
+                tokens--;
+                await setUserTokens(userId, tokens);
+                
+                // 3. Append new balance to reply
+                replyText += `\n---\n💰 **New Balance:** ${tokens} tokens.`;
+            } else {
+                replyText = `❌ Lookup Error: ${data.message || 'Unknown API error.'}`;
+            }
+
+            await bot.sendMessage(chatId, replyText, { parse_mode: 'Markdown' });
+
+        } catch (error) {
+            console.error("Error during API lookup or token update:", error);
+            await bot.sendMessage(chatId, "An internal error occurred while performing the lookup.");
+        }
+    });
+    
+    // --- Admin Commands ---
+
+    // Admin: Add Tokens
+    bot.onText(/\/addtokens (\d+) (\d+)/, async (msg, match) => {
+        const chatId = msg.chat.id;
+        const adminId = msg.from?.id;
+
+        if (adminId?.toString() !== ADMIN_ID) {
+            await bot.sendMessage(chatId, "🚫 Access denied. Only the administrator can use this command.");
+            return;
+        }
+
+        const targetUserId = parseInt(match![1]);
+        const tokensToAdd = parseInt(match![2]);
+
+        try {
+            const currentTokens = await getUserTokens(targetUserId);
+            const newTokens = currentTokens + tokensToAdd;
+            await setUserTokens(targetUserId, newTokens);
+
+            await bot.sendMessage(chatId, 
+                `✅ Added **${tokensToAdd}** tokens to user \`${targetUserId}\`.\n` +
+                `New balance: **${newTokens}** tokens.`, 
+                { parse_mode: 'Markdown' }
+            );
+        } catch (error) {
+            console.error("Error processing admin addtokens:", error);
+            await bot.sendMessage(chatId, "An error occurred while adding tokens.");
+        }
+    });
+
+    // Admin: Clear All Tokens (for testing/maintenance)
+    bot.onText(/\/clearall/, async (msg) => {
+        const chatId = msg.chat.id;
+        const adminId = msg.from?.id;
+
+        if (adminId?.toString() !== ADMIN_ID) {
+            await bot.sendMessage(chatId, "🚫 Access denied. Only the administrator can use this command.");
+            return;
+        }
+        
+        try {
+            await removeAllUsers();
+            await bot.sendMessage(chatId, "⚠️ All user token data has been wiped from the database.");
+        } catch (error) {
+            console.error("Error clearing all tokens:", error);
+            await bot.sendMessage(chatId, "An error occurred while clearing all tokens.");
+        }
+    });
 }
