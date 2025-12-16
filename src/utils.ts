@@ -1,17 +1,17 @@
 // src/utils.ts
 import * as qrcode from 'qrcode';
 
-// FIX: Reliably extract the Store constructor, accounting for common module wrapping.
+// DEFINITIVE FIX: Use a temporary variable to hold the module and then reliably
+// extract the constructor, handling Vercel's transpilation quirks.
 const StoreModule = require('json-file-store');
-// Try to use the default export if it exists (for compatibility), otherwise use the root export.
-const Store = StoreModule.default || StoreModule; 
+const Store = (StoreModule && StoreModule.default) ? StoreModule.default : StoreModule;
 
 import { BotConfig } from './types';
 
 // --- Configuration Constants ---
 const BOT_TOKEN_VALUE = process.env.BOT_TOKEN;
 
-// Defensive check (already implemented, but good to keep)
+// Defensive check
 if (!BOT_TOKEN_VALUE || BOT_TOKEN_VALUE.trim() === '') {
     throw new Error("CRITICAL STARTUP ERROR: BOT_TOKEN environment variable is missing or empty.");
 }
@@ -26,13 +26,15 @@ export const config: BotConfig = {
 };
 
 // --- Token Management (Persistent DB) ---
-// Initialize the persistent store using the reliably imported constructor
-const userStore = new Store({ file: './db/tokens.json', fallback: {} });
+// Line 64 where the error occurs:
+const userStore = new Store({ file: './db/tokens.json', fallback: {} }); 
 
 interface StoredUser {
     id: number;
     tokens: number;
 }
+
+// ... (rest of the functions remain the same) ...
 
 export async function getUserTokens(userId: number): Promise<number> {
     const user: StoredUser | null = await userStore.load(userId);
@@ -47,28 +49,17 @@ export async function removeAllUsers(): Promise<void> {
     await userStore.purge();
 }
 
-// --- Utility Functions ---
-
-/**
- * Normalizes a phone number string for API lookup (e.g., removes +, spaces, dashes)
- * @param numberString The raw number string from the user.
- * @returns A clean number string.
- */
+// ... (utility functions) ...
 export function normalizeNumber(numberString: string): string {
-    // Remove non-digit characters, but keep the result.
     return numberString.replace(/[\s\-\(\)\+]/g, '');
 }
 
-/**
- * Generates the UPI QR code base64 string.
- */
 export async function generateUpiQr(amount: number, tokens: number, userId: number): Promise<string> {
     const transactionNote = `TGBOT-${userId}-BUY-${tokens}`;
     const upiUrl = `upi://pay?pa=${config.UPI_ID}&pn=NumberLookupBot&am=${amount.toFixed(2)}&cu=INR&tn=${encodeURIComponent(transactionNote)}`;
     
     try {
         const qrBase64 = await qrcode.toDataURL(upiUrl, { type: 'image/png' });
-        // Return only the base64 part
         return qrBase64.replace(/^data:image\/png;base64,/, '');
     } catch (err) {
         console.error("QR Code generation error:", err);
