@@ -1,6 +1,10 @@
 // src/utils.ts
 import * as qrcode from 'qrcode';
-import Store from 'json-file-store';
+
+// FIX: Use require() to reliably import the CommonJS module constructor
+// This bypasses the 'default is not a constructor' error.
+const Store = require('json-file-store');
+
 import { BotConfig } from './types';
 
 // --- Configuration Constants ---
@@ -21,8 +25,7 @@ export const config: BotConfig = {
 };
 
 // --- Token Management (Persistent DB) ---
-// Using a simple file-based store for persistence on Vercel
-// The 'id' field for each object stored will be the userId (Telegram ID)
+// Initialize the persistent store using the reliably imported constructor
 const userStore = new Store({ file: './db/tokens.json', fallback: {} });
 
 interface StoredUser {
