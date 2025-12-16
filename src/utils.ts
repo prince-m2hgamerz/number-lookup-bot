@@ -1,10 +1,11 @@
-// src/utils.ts (Vercel KV Version)
+// src/utils.ts (SQLite Implementation)
 import * as qrcode from 'qrcode';
 import { BotConfig } from './types';
-import { createClient } from '@vercel/kv';
+import Database from 'better-sqlite3';
 
 // --- Configuration Constants ---
 const BOT_TOKEN_VALUE = process.env.BOT_TOKEN;
+const DB_PATH = './db/tokens.sqlite';
 
 if (!BOT_TOKEN_VALUE || BOT_TOKEN_VALUE.trim() === '') {
     throw new Error("CRITICAL STARTUP ERROR: BOT_TOKEN environment variable is missing or empty.");
@@ -19,34 +20,56 @@ export const config: BotConfig = {
     TOKEN_PRICE: 0.50,
 };
 
-// --- KV Store Initialization ---
-// Vercel KV client is automatically configured using VERCEL_KV_* environment variables
-const kv = createClient({
-    url: process.env.KV_REST_API_URL,
-    token: process.env.KV_REST_API_TOKEN,
-});
+// --- SQLite Database Initialization ---
+let db: Database.Database | null = null;
 
-const KV_NAMESPACE = 'tokens';
+function initializeDatabase(): Database.Database {
+    if (db) {
+        return db;
+    }
+    
+    try {
+        // We set the database object to be read/write and potentially create it if missing
+        db = new Database(DB_PATH, { verbose: console.log });
+        
+        // Create the tokens table if it does not exist
+        db.prepare(`
+            CREATE TABLE IF NOT EXISTS user_tokens (
+                user_id INTEGER PRIMARY KEY,
+                tokens INTEGER NOT NULL DEFAULT 0
+            )
+        `).run();
 
-// --- Token Management Functions (Vercel KV) ---
+        console.log('SQLite database initialized successfully.');
+        return db;
+    } catch (error) {
+        console.error('CRITICAL: Failed to initialize SQLite database:', error);
+        throw new Error('Database initialization failed.');
+    }
+}
+
+// Initialize the database connection when the module loads
+const database = initializeDatabase();
+
+// --- Token Management Functions (SQLite) ---
 
 export async function getUserTokens(userId: number): Promise<number> {
-    const key = `${KV_NAMESPACE}:${userId}`;
-    const tokens = await kv.get<number>(key);
-    return tokens || 0; // Returns 0 if key is not found
+    const stmt = database.prepare('SELECT tokens FROM user_tokens WHERE user_id = ?');
+    const row: { tokens: number } | undefined = stmt.get(userId) as any;
+    return row ? row.tokens : 0;
 }
 
 export async function setUserTokens(userId: number, tokens: number): Promise<void> {
-    const key = `${KV_NAMESPACE}:${userId}`;
-    await kv.set(key, tokens);
+    const stmt = database.prepare(`
+        INSERT INTO user_tokens (user_id, tokens) VALUES (?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET tokens=excluded.tokens
+    `);
+    stmt.run(userId, tokens);
 }
 
 export async function removeAllUsers(): Promise<void> {
-    // WARNING: This clears all keys with the "tokens:" prefix.
-    const keys = await kv.keys(`${KV_NAMESPACE}:*`);
-    if (keys.length > 0) {
-        await Promise.all(keys.map(key => kv.del(key)));
-    }
+    // WARNING: This clears ALL user token data.
+    database.prepare('DELETE FROM user_tokens').run();
 }
 
 // --- Utility Functions (Rest remains the same) ---

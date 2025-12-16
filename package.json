@@ -9,12 +9,12 @@
     "build": "tsc"
   },
   "dependencies": {
-    "@vercel/kv": "^3.0.0",
     "axios": "^1.6.5",
-    "node-telegram-bot-api": "^0.67.0",
+    "node-telegram-bot-api": "^0.63.0",
     "qrcode": "^1.5.3"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20.11.16",
     "@types/node-telegram-bot-api": "^0.64.2",
     "@types/qrcode": "^1.5.5",
